@@ -1,0 +1,8 @@
+Builds
+*.xcworkspace
+
+MidronomeMIDI/Builds
+MidronomeMIDI/*.xcworkspace
+
+.DS_Store
+*/.DS_Store
