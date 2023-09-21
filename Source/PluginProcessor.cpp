@@ -129,18 +129,20 @@ void MidronomeAudioProcessor::prepareToPlay (double sr, int samplesPerBlock)
     hasSyncStarted = false;
     currentlySendingTickPulse = false;
     
-#if JucePlugin_ProducesMidiOutput
     lastValueSent[BPM] = 0;
     waitBeforeSending[BPM] = 0;
     lastValueSent[BEATS_PER_BAR] = 0;
     waitBeforeSending[BEATS_PER_BAR] = 0;
-#endif
     
     tickPulseLength = 24; // 0.5ms at 48kHz, a bit more at 44.1kHz
     if (sampleRate > 50000.0) // 88.2 and 96 kHz
         tickPulseLength *= 2;
     if (sampleRate > 100000.0) // 176.4 and 192 kHz
         tickPulseLength *= 2;
+    
+#ifdef DEBUG
+    LOGGER.reset();
+#endif
 }
 
 void MidronomeAudioProcessor::releaseResources()
@@ -189,7 +191,7 @@ void MidronomeAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     juce::Optional<juce::AudioPlayHead::PositionInfo> info = getPlayHead()->getPosition();
     juce::Optional<juce::AudioPlayHead::TimeSignature> timeSig = info->getTimeSignature();
     
-    auto isPlaying = (info->getIsPlaying() || info->getIsRecording());
+    auto isPlaying = info->getIsPlaying();
     
     int beatsPerBar = 4; // 4/4 time sig per default
     auto bpm = info->getBpm().orFallback(120.0);
@@ -205,57 +207,49 @@ void MidronomeAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     /// ### SEND TIME SIGNATURE OVER USB ###
     if (timeSig.hasValue()) {
         beatsPerBar = (4 * timeSig->numerator) / (timeSig->denominator);
-#if JucePlugin_ProducesMidiOutput
         sendMidiToHost(BEATS_PER_BAR, beatsPerBar, totalNumSamples, isPlaying, midiMessages);
-#endif
     }
-
-    
-    
     
     /// ### PREPARATIONS BEFORE SAMPLE LOOP ###
         
     if (isPlaying)
     {
+        
+#ifdef DEBUG
+        if (!LOGGER.prevPlayingStatus) {
+            LOGGER.reset();
+            LOGGER.prevPlayingStatus = true;
+        }
+        LOGGER.logBlockInfo(info);
+#endif
+        
         double dppqPerSample = bpm / (60.0f*sampleRate);
         double currentPpqPos = info->getPpqPosition().orFallback(0.0);
         
-#if JucePlugin_ProducesMidiOutput
         lastValueSent[BPM] = 0;
         waitBeforeSending[BPM] = -1; // to indicate to sendMidiToHost() to delay sending
-#endif
         
         if (!hasSyncStarted)
             currentPpqPos -= info->getPpqPositionOfLastBarStart().orFallback(0.0); // because to check with beatsPerBar we need to start from the last bar
-        
-        
-#ifdef DEBUG
-        if (hasSyncStarted)
-            DEBUGDAT.add(info, sampleRate, totalNumSamples);
-#endif
         
         
         /// ### MAIN SAMPLE LOOP ###
         
         for (auto i = 0; i < totalNumSamples; i++)
         {
-            if (currentPpqPos >= 0.0) { // will be < 0 during pre-rolls and like
+            if (currentPpqPos >= 0.0) { // will be < 0 during pre-rolls, maybe a block before it starts, and sometimes when positionOfLastBarStart is after
                 double errorRange = 20.0*dppqPerSample; // 20 samples error range because of rounding and samples not "landing" exactly on a tick
                 
                 // we start the sync when we are almost 0 modulo beatsPerBar quarternotes, i.e. start of a bar
-                if (!hasSyncStarted && fmod(currentPpqPos, static_cast<double>(beatsPerBar)) <= errorRange) {
+                if (!hasSyncStarted && fmod(currentPpqPos, static_cast<double>(beatsPerBar)) <= errorRange)
                     hasSyncStarted = true;
-#ifdef DEBUG
-                    DEBUGDAT.reset();
-                    DEBUGDAT.add(info, sampleRate, totalNumSamples);
-#endif
-                }
                 
                 // we send a pulse if we are almost 0 modulo 1/24th of a quarter note
+                // TODO improve this by checking the ppq of last sent pulse => do not sed if it is in the same 24th
                 if (hasSyncStarted && !currentlySendingTickPulse && fmod(currentPpqPos, (1.0/24.0)) <= errorRange) {
                     currentlySendingTickPulse = true;
 #ifdef DEBUG
-                    DEBUGDAT.addTickSent(currentPpqPos);
+                    LOGGER.logPulseSent(currentPpqPos);
 #endif
                 }
             }
@@ -268,6 +262,11 @@ void MidronomeAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     
     else // not playing or recording
     {
+#ifdef DEBUG
+        if (LOGGER.prevPlayingStatus)
+            LOGGER.prevPlayingStatus = false;
+#endif
+            
         hasSyncStarted = false;
         
         
@@ -279,10 +278,8 @@ void MidronomeAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         
         
         /// ### SEND BPM OVER USB ###
-#if JucePlugin_ProducesMidiOutput
         if (info->getBpm().hasValue())
             sendMidiToHost(BPM, static_cast<int>(round(bpm)), totalNumSamples, isPlaying, midiMessages);
-#endif
     }
     
     
@@ -301,7 +298,6 @@ void MidronomeAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
 }
 
 
-#if JucePlugin_ProducesMidiOutput
 
 void MidronomeAudioProcessor::sendMidiToHost(values_type_t v, int newValue, int totalNumSamples, bool isPlaying, juce::MidiBuffer& midiMessages) {
     if (lastValueSent[v] != newValue && waitBeforeSending[v] <= 0) {
@@ -341,7 +337,6 @@ void MidronomeAudioProcessor::sendMidiToHost(values_type_t v, int newValue, int 
     // else waitBeforeSending[v] == 0 -> we do nothing
 }
 
-#endif
 
 
 #define TICK_HEIGHT         0.9f

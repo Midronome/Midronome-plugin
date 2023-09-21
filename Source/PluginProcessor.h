@@ -88,7 +88,6 @@ private:
     int tickPulseLength;
     
     //==============================================================================
-#if JucePlugin_ProducesMidiOutput
     typedef enum values_type {
         BPM,
         BEATS_PER_BAR
@@ -98,80 +97,70 @@ private:
     
     int lastValueSent[2];
     int waitBeforeSending[2];
-#endif
     
     
 #ifdef DEBUG
-    class DebugInfo {
+    class DebugLogger {
       public:
-        DebugInfo() {
-            //data = new datastruct_t[SIZE];
-            reset();
+        DebugLogger() {}
+        
+        void logBlockInfo(juce::Optional<juce::AudioPlayHead::PositionInfo>& info) {
+            if (nextBlockInfoLog < SIZE) {
+                blockInfoLogs[nextBlockInfoLog].set(info);
+                nextBlockInfoLog++;
+            }
         }
         
-        ~DebugInfo() {
-            //delete[] data;
+        void logPulseSent(double ppqPos) {
+            if (nextTickLog < SIZE) {
+                tickSentPpqPos[nextTickLog] = ppqPos;
+                nextTickLog++;
+            }
         }
-        
         
         void reset() {
-            currentPos = -1;
-            amntTickSent = 0;
-            for (auto i = 0 ; i < SIZE ; i++) {
-                data[i].hostPpqPos = -1.0f;
-                data[i].hostLastBarPos = -1.0f;
-                data[i].hostBpm = -1.0f;
-                data[i].dPpqPerBlock = -1.0f;
-                data[i].firstTickSentAtSample = -1.0f;
-                data[i].amntTicksSent = 0;
-            }
+            nextBlockInfoLog = 0;
+            nextTickLog = 0;
+            prevPlayingStatus = false;
         }
         
-        void add(juce::Optional<juce::AudioPlayHead::PositionInfo> info, double sampleRate, int blockSize) {
-            currentPos++;
-            
-            if (currentPos < 0 || currentPos >= SIZE) {
-                currentPos = SIZE;
-                return;
-            }
-            
-            data[currentPos].hostPpqPos = static_cast<float>(info->getPpqPosition().orFallback(-10.0));
-            data[currentPos].hostLastBarPos = static_cast<float>(info->getPpqPositionOfLastBarStart().orFallback(-10.0));
-            double bpm = info->getBpm().orFallback(-10.0);
-            data[currentPos].hostBpm = static_cast<float>(bpm);
-            double dPpqPerBlock = (static_cast<double>(blockSize)*bpm) / (60.0*sampleRate);
-            data[currentPos].dPpqPerBlock = static_cast<float>(dPpqPerBlock);
-        }
+        bool prevPlayingStatus;
         
-        void addTickSent(double pos) {
-            if (currentPos < 0 || currentPos >= SIZE)
-                return;
-            
-            amntTickSent++;
-            
-            data[currentPos].amntTicksSent = amntTickSent;
-            if (data[currentPos].firstTickSentAtSample == -1.0f)
-                data[currentPos].firstTickSentAtSample = static_cast<float>(pos);
-        }
         
       private:
-        static const int SIZE = 1024;
-        int currentPos;
-        int amntTickSent;
-    
-        typedef struct datastruct {
-            float hostPpqPos;
-            float hostLastBarPos;
-            float hostBpm;
-            float dPpqPerBlock;
-            float firstTickSentAtSample;
-            int amntTicksSent;
-        } datastruct_t ;
         
-        datastruct_t data[SIZE];
+        class BlockInfo {
+          public:
+            BlockInfo() {}
+            
+            void set(juce::Optional<juce::AudioPlayHead::PositionInfo>& info) {
+                ppqPosition = info->getPpqPosition().orFallback(-999999.0);
+                timeInSamples = info->getTimeInSamples().orFallback(-999999);
+                timeInSeconds = info->getTimeInSeconds().orFallback(-999999.0);
+                bpm = info->getBpm().orFallback(-999999.0);
+                isRecordingOrPlaying = 0;
+                if (info->getIsPlaying())
+                    isRecordingOrPlaying += 1;
+                if (info->getIsRecording())
+                    isRecordingOrPlaying += 10;
+            }
+            
+          private:
+            double ppqPosition;
+            int64_t timeInSamples;
+            double timeInSeconds;
+            double bpm;
+            int isRecordingOrPlaying; // 1 for playing, 10 for recording (11 for both)
+        };
+        
+        static const int SIZE = 512;
+        unsigned int nextBlockInfoLog;
+        unsigned int nextTickLog;
+        BlockInfo blockInfoLogs[SIZE];
+        double tickSentPpqPos[SIZE];
     };
     
-    DebugInfo DEBUGDAT;
+    DebugLogger LOGGER;
 #endif
     
     
