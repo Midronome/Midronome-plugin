@@ -87,6 +87,12 @@ private:
     
     int tickPulseLength;
     
+    int64_t expectedTimeInSamples; // to know if the playhead has been moved (manually or by looping)
+    int64_t lastTickNo; // last tick number, so we can check continuity and maintain 24 ticks per bar
+    int64_t samplesSinceLastTick; // to make sure we never send 2 ticks closer than minSamplesNumBetweenTicks
+    int64_t minSamplesNumBetweenTicks; // will be set to 6.25ms (=400bpm tick) in samples
+    int64_t maxSamplesNumBetweenTicks; // will be set to 83.3ms (=30bpm tick) in samples
+    
     //==============================================================================
     typedef enum values_type {
         BPM,
@@ -111,9 +117,9 @@ private:
             }
         }
         
-        void logPulseSent(double ppqPos) {
+        void logTickPulseSent(double tickPpqPos, int64_t currentTickNo, juce::Optional<juce::AudioPlayHead::PositionInfo>& info) {
             if (nextTickLog < SIZE) {
-                tickSentPpqPos[nextTickLog] = ppqPos;
+                tickSentLogs[nextTickLog].set(tickPpqPos, currentTickNo, info);
                 nextTickLog++;
             }
         }
@@ -129,11 +135,34 @@ private:
         
       private:
         
+        class TickInfo {
+          public:
+            TickInfo() {}
+            
+            void set(double tickPpqPos, int64_t currentTickNo, juce::Optional<juce::AudioPlayHead::PositionInfo>& info) {
+                ppqPos = tickPpqPos;
+                tickNo = currentTickNo;
+                auto timeSig = info->getTimeSignature();
+                int beatsPerBar = 4;
+                if (timeSig.hasValue())
+                    beatsPerBar = (4 * timeSig->numerator) / (timeSig->denominator);
+                auto posInBar = ppqPos - info->getPpqPositionOfLastBarStart().orFallback(0.0);
+                if (posInBar > static_cast<double>(beatsPerBar))
+                    posInBar -= static_cast<double>(beatsPerBar);
+                tickPosInBar = static_cast<int>(floor(posInBar * 24.0));
+            }
+            
+            double ppqPos;
+            int64_t tickNo;
+            int tickPosInBar;
+        };
+        
         class BlockInfo {
           public:
             BlockInfo() {}
             
             void set(juce::Optional<juce::AudioPlayHead::PositionInfo>& info) {
+                lastBarPpqPosition = info->getPpqPositionOfLastBarStart().orFallback(-999999.0);
                 ppqPosition = info->getPpqPosition().orFallback(-999999.0);
                 timeInSamples = info->getTimeInSamples().orFallback(-999999);
                 timeInSeconds = info->getTimeInSeconds().orFallback(-999999.0);
@@ -146,6 +175,7 @@ private:
             }
             
           private:
+            double lastBarPpqPosition;
             double ppqPosition;
             int64_t timeInSamples;
             double timeInSeconds;
@@ -157,7 +187,7 @@ private:
         unsigned int nextBlockInfoLog;
         unsigned int nextTickLog;
         BlockInfo blockInfoLogs[SIZE];
-        double tickSentPpqPos[SIZE];
+        TickInfo tickSentLogs[SIZE];
     };
     
     DebugLogger LOGGER;

@@ -2,27 +2,27 @@
     ==============================================================================
 
     This file is part of the Midronome plugin, a VST3/AU/AAX plugin for Digital
-	Audio Workstations (DAW) whose purpose is to synchronize DAWs with the
-	Midronome (more info on <https://www.midronome.com/>).
+    Audio Workstations (DAW) whose purpose is to synchronize DAWs with the
+    Midronome (more info on <https://www.midronome.com/>).
  
     Copyright © 2023 - Simon Lasnier (Midronome ApS)
-  	Copyright © 2015-2018 - Maximilian Rest (E-RM)
+      Copyright © 2015-2018 - Maximilian Rest (E-RM)
 
-	Note: the algorithm to send the audio pulses is partially inspired from the
-	one in the Multiclock plugin from Maximilian Rest from E-RM, who nicely
-	released his plugin under the GPL terms as well. Thank you so much Max :)
-	See the multiclock's plugin code on
-	https://github.com/m-rest/tick_tock/tree/main
+    Note: the algorithm to send the audio pulses is partially inspired from the
+    one in the Multiclock plugin from Maximilian Rest from E-RM, who nicely
+    released his plugin under the GPL terms as well. Thank you so much Max :)
+    See the multiclock's plugin code on
+    https://github.com/m-rest/tick_tock/tree/main
 
     The Midronome plugin is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by the Free
-	Software Foundation, either version 3 of the License, or (at your option) any
-	later version.
+    Software Foundation, either version 3 of the License, or (at your option) any
+    later version.
 
     The Midronome plugin is distributed in the hope that it will be useful, but
-	WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+    WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
     FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
-	details.
+    details.
 
     You should have received a copy of the GNU General Public License along with
     the Midronome plugin. If not, see <https://www.gnu.org/licenses/>.
@@ -140,6 +140,10 @@ void MidronomeAudioProcessor::prepareToPlay (double sr, int samplesPerBlock)
     if (sampleRate > 100000.0) // 176.4 and 192 kHz
         tickPulseLength *= 2;
     
+    // set to tempo limits to 29.9bpm -> 400.2bpm - ticks will always be sent according to these
+    minSamplesNumBetweenTicks = static_cast<int64_t>(sampleRate / ( (400.2*24.0)/60.0 ));
+    maxSamplesNumBetweenTicks = static_cast<int64_t>(sampleRate / ( (29.9*24.0)/60.0 ));
+    
 #ifdef DEBUG
     LOGGER.reset();
 #endif
@@ -177,6 +181,8 @@ bool MidronomeAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts
 }
 #endif
 
+
+
 void MidronomeAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
     juce::ScopedNoDenormals noDenormals;
@@ -188,13 +194,14 @@ void MidronomeAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     
     auto totalNumSamples = buffer.getNumSamples();
     
-    juce::Optional<juce::AudioPlayHead::PositionInfo> info = getPlayHead()->getPosition();
-    juce::Optional<juce::AudioPlayHead::TimeSignature> timeSig = info->getTimeSignature();
-    
+    auto info = getPlayHead()->getPosition();
+    auto timeSig = info->getTimeSignature();
     auto isPlaying = info->getIsPlaying();
     
     int beatsPerBar = 4; // 4/4 time sig per default
-    auto bpm = info->getBpm().orFallback(120.0);
+    auto bpm = info->getBpm().orFallback(0.0);
+    
+    bool timeSigIn8 = false;
 
     // clear buffers
     buffer.clear();
@@ -207,12 +214,20 @@ void MidronomeAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     /// ### SEND TIME SIGNATURE OVER USB ###
     if (timeSig.hasValue()) {
         beatsPerBar = (4 * timeSig->numerator) / (timeSig->denominator);
-        sendMidiToHost(BEATS_PER_BAR, beatsPerBar, totalNumSamples, isPlaying, midiMessages);
+        auto beatPerBarToSend = beatsPerBar;
+        if (timeSig->denominator == 8) {
+            beatPerBarToSend = timeSig->numerator;
+            timeSigIn8 = true;
+        }
+        
+        sendMidiToHost(BEATS_PER_BAR, beatPerBarToSend, totalNumSamples, isPlaying, midiMessages);
     }
+    
+    
     
     /// ### PREPARATIONS BEFORE SAMPLE LOOP ###
         
-    if (isPlaying)
+    if (isPlaying && bpm >= 30.0 && bpm <= 400.0)
     {
         
 #ifdef DEBUG
@@ -223,14 +238,20 @@ void MidronomeAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         LOGGER.logBlockInfo(info);
 #endif
         
-        double dppqPerSample = bpm / (60.0f*sampleRate);
-        double currentPpqPos = info->getPpqPosition().orFallback(0.0);
+        auto dppqPerSample = bpm / (60.0*sampleRate);
+        auto currentPpqPos = info->getPpqPosition().orFallback(0.0);
         
         lastValueSent[BPM] = 0;
         waitBeforeSending[BPM] = -1; // to indicate to sendMidiToHost() to delay sending
         
-        if (!hasSyncStarted)
-            currentPpqPos -= info->getPpqPositionOfLastBarStart().orFallback(0.0); // because to check with beatsPerBar we need to start from the last bar
+        // checking playing continuity (if playhead moved manually or we looped f.x.)
+        auto curTimeInSamples = info->getTimeInSamples();
+        if (!curTimeInSamples.hasValue() || std::abs(curTimeInSamples.orFallback(0) - expectedTimeInSamples) > 2)
+            lastTickNo = -1; // if the playhead has been moved by more than 2 samples, we make lastTickNo invalid
+        
+        expectedTimeInSamples = curTimeInSamples.orFallback(0) + totalNumSamples; // for next block check
+        
+        
         
         
         /// ### MAIN SAMPLE LOOP ###
@@ -241,26 +262,73 @@ void MidronomeAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
                 double errorRange = 20.0*dppqPerSample; // 20 samples error range because of rounding and samples not "landing" exactly on a tick
                 
                 // we start the sync when we are almost 0 modulo beatsPerBar quarternotes, i.e. start of a bar
-                if (!hasSyncStarted && fmod(currentPpqPos, static_cast<double>(beatsPerBar)) <= errorRange)
-                    hasSyncStarted = true;
+                if (!hasSyncStarted) {
+                    auto ppqPosFromLastBar = currentPpqPos - info->getPpqPositionOfLastBarStart().orFallback(0.0); // to check with beatsPerBar we need to start from the last bar
+                    
+                    if (fmod(ppqPosFromLastBar, static_cast<double>(beatsPerBar)) < errorRange) {
+                        hasSyncStarted = true;
+                        
+                        // sync always starts by sending a tick, so this ensures samplesSinceLastTick => maxSamplesNumBetweenTicks to send the tick below
+                        samplesSinceLastTick = static_cast<int64_t>(sampleRate);
+                        lastTickNo = -1;
+                    }
+                }
                 
-                // we send a pulse if we are almost 0 modulo 1/24th of a quarter note
-                // TODO improve this by checking the ppq of last sent pulse => do not sed if it is in the same 24th
-                if (hasSyncStarted && !currentlySendingTickPulse && fmod(currentPpqPos, (1.0/24.0)) <= errorRange) {
-                    currentlySendingTickPulse = true;
+                if (hasSyncStarted && !currentlySendingTickPulse) {
+                    bool sendTick = false;
+                    auto tickPos = currentPpqPos*24.0;
+                    auto currentTickNo = static_cast<int64_t>(tickPos);
+                    auto tickRest = tickPos - floor(tickPos); // decimals of the current tick position
+                    bool extraTickInTimeSig8 = false;
+                    
+                    if (lastTickNo >= 0) { // if we have a valid last tick position
+                        if (currentTickNo > lastTickNo) { // if there is 1 (or more) tick between current and last tick => we send a tick
+                            sendTick = true;
+                        }
+                        else if (timeSigIn8 && (currentTickNo == lastTickNo)) { // in time signatures in x/8 we send twice as many ticks
+                            tickRest -= 0.5;
+                            if (tickRest >= 0 && tickRest < errorRange*24.0) {
+                                sendTick = true;
+                                extraTickInTimeSig8 = true;
+                            }
+                        }
+                        // else {} -> we already sent current (or more) tick and there are no extra tick in x/8 time sig => we wait
+                        
+                    }
+                    else { // if we do not have a valid last tick (sync just started, or playhead has moved)
+                        if (tickRest < errorRange*24.0)
+                            sendTick = true;
+                    }
+                    
+                    
+                    // we do not send a tick if it will give a tempo > 400bpm, and we make sure to send one to avoid tempo < 30bpm
+                    if ( (sendTick && samplesSinceLastTick >= minSamplesNumBetweenTicks) || samplesSinceLastTick >= maxSamplesNumBetweenTicks) {
+                        if (lastTickNo < 0)
+                            lastTickNo = currentTickNo; // we "initialize" lastTickNo if it was not valid
+                        else if (!extraTickInTimeSig8)
+                            lastTickNo++; // we increment if it was valid, but not for the extra tick in x/8 time sig
+                        samplesSinceLastTick = 0;
+                        currentlySendingTickPulse = true;
 #ifdef DEBUG
-                    LOGGER.logPulseSent(currentPpqPos);
+                        LOGGER.logTickPulseSent(currentPpqPos, lastTickNo, info);
 #endif
+                    }
                 }
             }
             
             outputData[i] = getCurrentTickPulseSample(); // updates currentlySendingTickPulse accordingly
              
             currentPpqPos += dppqPerSample; // increment current ppq pos based on the current BPM
+            samplesSinceLastTick++;
         }
     }
     
-    else // not playing or recording
+    
+    
+    
+    /// ### WHEN NOT PLAYING OR WHEN BPM IS OUT OF RANGE ###
+    
+    else
     {
 #ifdef DEBUG
         if (LOGGER.prevPlayingStatus)
@@ -269,17 +337,19 @@ void MidronomeAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
             
         hasSyncStarted = false;
         
-        
-        /// ### FINISH SENDING PULSE ###
+        // Finish sending pulse if needed
         if (currentlySendingTickPulse) {
             for (auto i = 0; i < totalNumSamples; i++)
                 outputData[i] = getCurrentTickPulseSample(); // updates currentlySendingTickPulse accordingly
         }
         
         
-        /// ### SEND BPM OVER USB ###
-        if (info->getBpm().hasValue())
-            sendMidiToHost(BPM, static_cast<int>(round(bpm)), totalNumSamples, isPlaying, midiMessages);
+        // Send BPM over USB if it is valid
+        auto bpmToSend = bpm;
+        if (timeSigIn8)
+            bpmToSend *= 2;
+        if (bpmToSend >= 30.0 && bpmToSend <= 400.0)
+            sendMidiToHost(BPM, static_cast<int>(round(bpmToSend)), totalNumSamples, isPlaying, midiMessages);
     }
     
     
@@ -296,6 +366,7 @@ void MidronomeAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     }
     
 }
+
 
 
 
