@@ -18,6 +18,9 @@
             file="Source/PluginEditor.cpp"/>
       <FILE id="d3KDPi" name="PluginEditor.h" compile="0" resource="0" file="Source/PluginEditor.h"/>
     </GROUP>
+    <GROUP id="{F1629B7D-8D3B-B1C7-7D70-CE894DE7BF49}" name="Resources">
+      <FILE id="WHrNyN" name="midrologo.png" compile="0" resource="1" file="Resources/midrologo.png"/>
+    </GROUP>
   </MAINGROUP>
   <MODULES>
     <MODULE id="juce_audio_basics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>

@@ -30,9 +30,7 @@
 MidronomeAudioProcessorEditor::MidronomeAudioProcessorEditor (MidronomeAudioProcessor& p)
     : AudioProcessorEditor (&p), audioProcessor (p)
 {
-    // Make sure that before the constructor has finished, you've set the
-    // editor's size to whatever you need it to be.
-    setSize (0, 0);
+    setSize (300, 250);
 }
 
 MidronomeAudioProcessorEditor::~MidronomeAudioProcessorEditor()
@@ -42,12 +40,11 @@ MidronomeAudioProcessorEditor::~MidronomeAudioProcessorEditor()
 //==============================================================================
 void MidronomeAudioProcessorEditor::paint (juce::Graphics& g)
 {
-    // (Our component is opaque, so we must completely fill the background with a solid colour)
-    g.fillAll (getLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId));
+    auto myImg = juce::ImageCache::getFromMemory(BinaryData::midrologo_png, BinaryData::midrologo_pngSize);
+    g.fillAll(juce::Colours::black);
+    g.drawImageAt(myImg, 86, 87);
 }
 
 void MidronomeAudioProcessorEditor::resized()
 {
-    // This is generally where you'll want to lay out the positions of any
-    // subcomponents in your editor..
 }
