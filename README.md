@@ -14,7 +14,7 @@
 This plugin generates 24ppq Audio pulses in your DAW in order to sync with the [Midronome](https://www.midronome.com/). It can probably be used with any other device that can follow analog pulses as well.
 You can download the v1.1.0 release under "*Releases*" in the right column.
 
-See the [Midronome User Guide](https://go.midronome.com/userguide) section **5.4** "*Syncing to your DAW using the 24P mode*" on how to use the plugin to sync your Midronome. 
+Please see the "*How To Sync with DAWs*" PDF regarding how to use this plugin to sync your DAW and your Midronome.
 
 ## MIDI
 
